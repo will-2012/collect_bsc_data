@@ -1,4 +1,4 @@
-# collect_bsc_data
+# bsc_stats
 
 A standalone, dependency-free Go tool that scans a range of BNB Smart Chain
 (BSC) blocks over JSON-RPC and produces transaction statistics.
@@ -91,7 +91,7 @@ Requires Go 1.21+.
 ### Build
 
 ```sh
-go build -o collect_bsc_data .
+go build -o bsc_stats .
 ```
 
 > Note: on some macOS + Go 1.21 setups the default linker produces a binary
@@ -99,15 +99,21 @@ go build -o collect_bsc_data .
 > the pure-Go linker:
 >
 > ```sh
-> CGO_ENABLED=0 go build -o collect_bsc_data .
+> CGO_ENABLED=0 go build -o bsc_stats .
 > ```
 
 ### Run
 
+Functionality is organized into subcommands:
+
+| Subcommand | Description |
+|------------|-------------|
+| `collect-top` | Scan a block/date range and report transaction stats + top-100 senders |
+
 The endpoint is required (it may contain an API key, so it is never hardcoded):
 
 ```sh
-./collect_bsc_data \
+./bsc_stats collect-top \
   -endpoint "https://your-bsc-rpc.example/v1/<API_KEY>" \
   -start_date 2025-05-01 \
   -end_date   2026-06-30 \
@@ -119,16 +125,16 @@ The endpoint is required (it may contain an API key, so it is never hardcoded):
 Scan an explicit block range instead of dates (overrides `-start_date`/`-end_date`):
 
 ```sh
-./collect_bsc_data -endpoint "$BSC_ENDPOINT" -start_block 107000590 -end_block 107001589
+./bsc_stats collect-top -endpoint "$BSC_ENDPOINT" -start_block 107000590 -end_block 107001589
 ```
 
 Re-scan blocks that previously failed all retries, then exit:
 
 ```sh
-./collect_bsc_data -endpoint "$BSC_ENDPOINT" -rescan_failed -out_dir ./out
+./bsc_stats collect-top -endpoint "$BSC_ENDPOINT" -rescan_failed -out_dir ./out
 ```
 
-### Flags
+### `collect-top` flags
 
 | Flag | Env | Default | Description |
 |------|-----|---------|-------------|

@@ -1,4 +1,4 @@
-package main
+package collecttop
 
 import (
 	"encoding/json"

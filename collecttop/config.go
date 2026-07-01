@@ -1,4 +1,4 @@
-package main
+package collecttop
 
 import (
 	"flag"
@@ -40,20 +40,23 @@ func parseDate(s string) (time.Time, error) {
 	return time.ParseInLocation("2006-01-02", s, time.UTC)
 }
 
-// LoadConfig parses flags (with env defaults) and validates them.
-func LoadConfig() (*Config, error) {
+// LoadConfig parses the collect-top flags (with env defaults) from args and validates them.
+func LoadConfig(args []string) (*Config, error) {
+	fs := flag.NewFlagSet("collect-top", flag.ExitOnError)
 	var (
-		endpoint    = flag.String("endpoint", envOr("BSC_ENDPOINT", defaultEndpoint), "JSON-RPC endpoint")
-		concurrency = flag.Int("concurrency", envInt("BSC_CONCURRENCY", 500), "worker concurrency (up to ~2000)")
-		startDate   = flag.String("start_date", envOr("BSC_START_DATE", "2025-05-01"), "inclusive UTC start date YYYY-MM-DD")
-		endDate     = flag.String("end_date", envOr("BSC_END_DATE", "2026-06-30"), "inclusive UTC end date YYYY-MM-DD")
-		chunkSize   = flag.Int64("chunk_size", int64(envInt("BSC_CHUNK_SIZE", 100000)), "blocks per chunk")
-		outDir      = flag.String("out_dir", envOr("BSC_OUT_DIR", "./out"), "output directory")
-		rescanFail  = flag.Bool("rescan_failed", false, "re-scan blocks listed in failed_blocks.log and exit")
-		startBlock  = flag.Int64("start_block", -1, "explicit inclusive start block (overrides date range; requires end_block)")
-		endBlock    = flag.Int64("end_block", -1, "explicit inclusive end block (overrides date range; requires start_block)")
+		endpoint    = fs.String("endpoint", envOr("BSC_ENDPOINT", defaultEndpoint), "JSON-RPC endpoint")
+		concurrency = fs.Int("concurrency", envInt("BSC_CONCURRENCY", 500), "worker concurrency (up to ~2000)")
+		startDate   = fs.String("start_date", envOr("BSC_START_DATE", "2025-05-01"), "inclusive UTC start date YYYY-MM-DD")
+		endDate     = fs.String("end_date", envOr("BSC_END_DATE", "2026-06-30"), "inclusive UTC end date YYYY-MM-DD")
+		chunkSize   = fs.Int64("chunk_size", int64(envInt("BSC_CHUNK_SIZE", 100000)), "blocks per chunk")
+		outDir      = fs.String("out_dir", envOr("BSC_OUT_DIR", "./out"), "output directory")
+		rescanFail  = fs.Bool("rescan_failed", false, "re-scan blocks listed in failed_blocks.log and exit")
+		startBlock  = fs.Int64("start_block", -1, "explicit inclusive start block (overrides date range; requires end_block)")
+		endBlock    = fs.Int64("end_block", -1, "explicit inclusive end block (overrides date range; requires start_block)")
 	)
-	flag.Parse()
+	if err := fs.Parse(args); err != nil {
+		return nil, err
+	}
 
 	start, err := parseDate(*startDate)
 	if err != nil {

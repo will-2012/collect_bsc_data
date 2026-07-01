@@ -1,6 +1,6 @@
 /out/
 docs/superpowers/
 failed_blocks.log
-/collect_bsc_data
-collect_bsc_data
+/bsc_stats
+bsc_stats
 *.test
