@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"bsc_stats/common"
 )
 
 // numTxTypes covers tx types 0x00..0x04.
@@ -25,13 +27,7 @@ type ChunkResult struct {
 	// flushed to the failed log only when the chunk is persisted, so an
 	// interrupted (unpersisted) chunk leaves no stale entries to be double-counted
 	// when the chunk is redone on resume. Format: block -> reason.
-	Failed []FailedBlock
-}
-
-// FailedBlock is a block that failed to fetch, with the reason.
-type FailedBlock struct {
-	Block  int64
-	Reason string
+	Failed []common.FailedBlock
 }
 
 func newChunkResult(start, end int64) *ChunkResult {

@@ -3,6 +3,8 @@ package collecttop
 import (
 	"os"
 	"testing"
+
+	"bsc_stats/common"
 )
 
 func strptr(s string) *string { return &s }
@@ -53,7 +55,7 @@ func TestChunkRoundTrip(t *testing.T) {
 }
 
 func TestChunkBounds(t *testing.T) {
-	got := chunkBounds(10, 25, 10)
+	got := common.ChunkBounds(10, 25, 10)
 	want := [][2]int64{{10, 19}, {20, 25}}
 	if len(got) != len(want) {
 		t.Fatalf("got %v want %v", got, want)

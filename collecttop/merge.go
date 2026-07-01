@@ -3,11 +3,12 @@ package collecttop
 import (
 	"context"
 	"log"
-	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
+
+	"bsc_stats/common"
 )
 
 // Merged is the fully aggregated result across all chunk files.
@@ -85,7 +86,7 @@ func (m *Merged) sortedAddrs() []AddrCount {
 // contract vs EOA top-N lists. Stops once both lists are full. getCode is a cheap
 // method, so candidates are classified in concurrent batches (sized to parallelism)
 // while assignment still happens in count-desc order to keep the rankings correct.
-func classifyTop(ctx context.Context, c *Client, sorted []AddrCount, n, parallelism int) (contracts, eoa []AddrCount, err error) {
+func classifyTop(ctx context.Context, c *common.Client, sorted []AddrCount, n, parallelism int) (contracts, eoa []AddrCount, err error) {
 	contracts = make([]AddrCount, 0, n)
 	eoa = make([]AddrCount, 0, n)
 	if parallelism < 1 {
@@ -154,8 +155,3 @@ func classifyTop(ctx context.Context, c *Client, sorted []AddrCount, n, parallel
 
 // outFile joins out dir with a name.
 func outFile(outDir, name string) string { return filepath.Join(outDir, name) }
-
-// ensureDir makes the output directory if missing.
-func ensureDir(dir string) error {
-	return os.MkdirAll(dir, 0755)
-}

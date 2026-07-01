@@ -8,6 +8,9 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
+
+	"bsc_stats/common"
 )
 
 // mockBlock is a canned block the mock server can serve.
@@ -31,10 +34,10 @@ type mockServer struct {
 
 	// failBlock, when set, returns an HTTP 500 for eth_getBlockByNumber of that
 	// block for the first failTimes attempts (per-attempt counter).
-	failBlock     int64
-	failTimes     int
-	failSeen      int
-	failAlways    map[int64]bool // blocks that always 500 on full-block fetch
+	failBlock  int64
+	failTimes  int
+	failSeen   int
+	failAlways map[int64]bool // blocks that always 500 on full-block fetch
 }
 
 func newMockServer(t *testing.T) *mockServer {
@@ -52,10 +55,9 @@ func newMockServer(t *testing.T) *mockServer {
 func (m *mockServer) URL() string { return m.srv.URL }
 
 // client builds a Client pointed at the mock with fast retries for tests.
-func (m *mockServer) client() *Client {
-	c := NewClient(m.URL(), 8)
-	c.maxRetry = 4
-	c.baseWait = 1 * 1e6 // 1ms in ns
+func (m *mockServer) client() *common.Client {
+	c := common.NewClient(m.URL(), 8)
+	c.SetRetryPolicy(4, time.Millisecond)
 	return c
 }
 
@@ -100,12 +102,12 @@ func (m *mockServer) handle(w http.ResponseWriter, r *http.Request) {
 		m.mu.Lock()
 		latest := m.latest
 		m.mu.Unlock()
-		m.writeResult(w, req.ID, intToHex(latest))
+		m.writeResult(w, req.ID, common.IntToHex(latest))
 
 	case "eth_getBlockByNumber":
 		hexNum, _ := req.Params[0].(string)
 		full, _ := req.Params[1].(bool)
-		n, err := parseHexInt(hexNum)
+		n, err := common.ParseHexInt(hexNum)
 		if err != nil {
 			http.Error(w, "bad block param", http.StatusBadRequest)
 			return
@@ -134,14 +136,14 @@ func (m *mockServer) handle(w http.ResponseWriter, r *http.Request) {
 		}
 		if full {
 			m.writeResult(w, req.ID, map[string]interface{}{
-				"number":       intToHex(b.number),
-				"timestamp":    intToHex(b.timestamp),
+				"number":       common.IntToHex(b.number),
+				"timestamp":    common.IntToHex(b.timestamp),
 				"transactions": b.txs,
 			})
 		} else {
 			m.writeResult(w, req.ID, map[string]interface{}{
-				"number":    intToHex(b.number),
-				"timestamp": intToHex(b.timestamp),
+				"number":    common.IntToHex(b.number),
+				"timestamp": common.IntToHex(b.timestamp),
 			})
 		}
 

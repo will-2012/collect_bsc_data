@@ -7,10 +7,12 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"bsc_stats/common"
 )
 
 // newTestScanner wires a Scanner against the mock with a small chunk size.
-func newTestScanner(t *testing.T, m *mockServer, dir string, chunkSize int64) (*Scanner, *FailedLog) {
+func newTestScanner(t *testing.T, m *mockServer, dir string, chunkSize int64) (*Scanner, *common.FailedLog) {
 	t.Helper()
 	cfg := &Config{
 		Endpoint:    m.URL(),
@@ -18,15 +20,15 @@ func newTestScanner(t *testing.T, m *mockServer, dir string, chunkSize int64) (*
 		ChunkSize:   chunkSize,
 		OutDir:      dir,
 	}
-	if err := ensureDir(dir); err != nil {
+	if err := common.EnsureDir(dir); err != nil {
 		t.Fatal(err)
 	}
-	fl, err := openFailedLog(dir)
+	fl, err := common.OpenFailedLog(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { fl.Close() })
-	prog := newProgress(0)
+	prog := common.NewProgress(0)
 	return newScanner(cfg, m.client(), fl, prog), fl
 }
 
@@ -150,7 +152,7 @@ func TestRetryRecoversTransientFailure(t *testing.T) {
 		t.Errorf("TotalTx=%d want 5 (transient retry should recover block 2)", got.TotalTx)
 	}
 	// No failed-block log entries.
-	failed, _ := readFailedBlocks(dir)
+	failed, _ := common.ReadFailedBlocks(dir)
 	if len(failed) != 0 {
 		t.Errorf("failed blocks=%v want none after recovery", failed)
 	}
@@ -189,7 +191,7 @@ func TestRetryExhaustionRecordedToFailedLog(t *testing.T) {
 	}
 
 	// failed_blocks.log must contain block 3, and only after the chunk persisted.
-	failed, err := readFailedBlocks(dir)
+	failed, err := common.ReadFailedBlocks(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -226,7 +228,7 @@ func TestInterruptedChunkDoesNotRecordFailures(t *testing.T) {
 	if _, err := os.Stat(chunkFileName(dir, 0)); err == nil {
 		t.Errorf("partial chunk must not be persisted on cancel")
 	}
-	failed, _ := readFailedBlocks(dir)
+	failed, _ := common.ReadFailedBlocks(dir)
 	if len(failed) != 0 {
 		t.Errorf("cancelled chunk recorded failures %v, want none", failed)
 	}

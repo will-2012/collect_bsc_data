@@ -7,6 +7,8 @@ import (
 	"os/signal"
 	"syscall"
 	"time"
+
+	"bsc_stats/common"
 )
 
 const topN = 100
@@ -19,7 +21,7 @@ func Run(args []string) {
 	if err != nil {
 		log.Fatalf("config: %v", err)
 	}
-	if err := ensureDir(cfg.OutDir); err != nil {
+	if err := common.EnsureDir(cfg.OutDir); err != nil {
 		log.Fatalf("create out_dir: %v", err)
 	}
 
@@ -28,9 +30,9 @@ func Run(args []string) {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	client := NewClient(cfg.Endpoint, cfg.Concurrency)
+	client := common.NewClient(cfg.Endpoint, cfg.Concurrency)
 
-	failed, err := openFailedLog(cfg.OutDir)
+	failed, err := common.OpenFailedLog(cfg.OutDir)
 	if err != nil {
 		log.Fatalf("open failed log: %v", err)
 	}
@@ -38,7 +40,7 @@ func Run(args []string) {
 
 	// Re-scan mode: only re-fetch previously failed blocks, then exit.
 	if cfg.RescanFail {
-		sc := newScanner(cfg, client, failed, newProgress(0))
+		sc := newScanner(cfg, client, failed, common.NewProgress(0))
 		if err := sc.RescanFailed(ctx); err != nil {
 			log.Fatalf("rescan: %v", err)
 		}
@@ -52,7 +54,7 @@ func Run(args []string) {
 	} else {
 		log.Printf("resolving block range for %s .. %s (UTC)",
 			cfg.StartDate.Format(time.RFC3339), cfg.EndDate.Format(time.RFC3339))
-		startBlock, endBlock, err = resolveRange(ctx, client, cfg)
+		startBlock, endBlock, err = common.ResolveRange(ctx, client, cfg.StartDate, cfg.EndDate)
 		if err != nil {
 			log.Fatalf("resolve range: %v", err)
 		}
@@ -60,14 +62,14 @@ func Run(args []string) {
 	totalBlocks := endBlock - startBlock + 1
 	log.Printf("block range resolved: %d .. %d (%d blocks)", startBlock, endBlock, totalBlocks)
 
-	progress := newProgress(totalBlocks)
-	go progress.run(ctx, 10*time.Minute)
+	progress := common.NewProgress(totalBlocks)
+	go progress.Run(ctx, 10*time.Minute)
 
 	sc := newScanner(cfg, client, failed, progress)
 	scanErr := sc.Run(ctx, startBlock, endBlock)
 
 	// Always print a final progress summary.
-	progress.report()
+	progress.Report()
 
 	if scanErr != nil {
 		if ctx.Err() != nil {
@@ -84,7 +86,7 @@ func Run(args []string) {
 	}
 
 	// Warn if any blocks exhausted retries: the report omits their txs.
-	failedBlocks, err := readFailedBlocks(cfg.OutDir)
+	failedBlocks, err := common.ReadFailedBlocks(cfg.OutDir)
 	if err != nil {
 		log.Printf("warning: could not read failed_blocks.log: %v", err)
 	}

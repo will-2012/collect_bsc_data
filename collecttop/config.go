@@ -3,8 +3,9 @@ package collecttop
 import (
 	"flag"
 	"fmt"
-	"os"
 	"time"
+
+	"bsc_stats/common"
 )
 
 // Config holds all runtime configuration, sourced from flags with env fallback.
@@ -27,29 +28,16 @@ func (c *Config) BlockRangeOverride() bool { return c.StartBlock >= 0 && c.EndBl
 // an API key) must be supplied via -endpoint or the BSC_ENDPOINT env var.
 const defaultEndpoint = ""
 
-// envOr returns the env var value if set, otherwise the fallback.
-func envOr(key, fallback string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return fallback
-}
-
-// parseDate parses a YYYY-MM-DD date as UTC midnight.
-func parseDate(s string) (time.Time, error) {
-	return time.ParseInLocation("2006-01-02", s, time.UTC)
-}
-
 // LoadConfig parses the collect-top flags (with env defaults) from args and validates them.
 func LoadConfig(args []string) (*Config, error) {
 	fs := flag.NewFlagSet("collect-top", flag.ExitOnError)
 	var (
-		endpoint    = fs.String("endpoint", envOr("BSC_ENDPOINT", defaultEndpoint), "JSON-RPC endpoint")
-		concurrency = fs.Int("concurrency", envInt("BSC_CONCURRENCY", 500), "worker concurrency (up to ~2000)")
-		startDate   = fs.String("start_date", envOr("BSC_START_DATE", "2025-05-01"), "inclusive UTC start date YYYY-MM-DD")
-		endDate     = fs.String("end_date", envOr("BSC_END_DATE", "2026-06-30"), "inclusive UTC end date YYYY-MM-DD")
-		chunkSize   = fs.Int64("chunk_size", int64(envInt("BSC_CHUNK_SIZE", 100000)), "blocks per chunk")
-		outDir      = fs.String("out_dir", envOr("BSC_OUT_DIR", "./out"), "output directory")
+		endpoint    = fs.String("endpoint", common.EnvOr("BSC_ENDPOINT", defaultEndpoint), "JSON-RPC endpoint")
+		concurrency = fs.Int("concurrency", common.EnvInt("BSC_CONCURRENCY", 500), "worker concurrency (up to ~2000)")
+		startDate   = fs.String("start_date", common.EnvOr("BSC_START_DATE", "2025-05-01"), "inclusive UTC start date YYYY-MM-DD")
+		endDate     = fs.String("end_date", common.EnvOr("BSC_END_DATE", "2026-06-30"), "inclusive UTC end date YYYY-MM-DD")
+		chunkSize   = fs.Int64("chunk_size", int64(common.EnvInt("BSC_CHUNK_SIZE", 100000)), "blocks per chunk")
+		outDir      = fs.String("out_dir", common.EnvOr("BSC_OUT_DIR", "./out"), "output directory")
 		rescanFail  = fs.Bool("rescan_failed", false, "re-scan blocks listed in failed_blocks.log and exit")
 		startBlock  = fs.Int64("start_block", -1, "explicit inclusive start block (overrides date range; requires end_block)")
 		endBlock    = fs.Int64("end_block", -1, "explicit inclusive end block (overrides date range; requires start_block)")
@@ -58,12 +46,12 @@ func LoadConfig(args []string) (*Config, error) {
 		return nil, err
 	}
 
-	start, err := parseDate(*startDate)
+	start, err := common.ParseDate(*startDate)
 	if err != nil {
 		return nil, fmt.Errorf("bad start_date %q: %w", *startDate, err)
 	}
 	// End date is inclusive of the whole day: 23:59:59 UTC.
-	endDay, err := parseDate(*endDate)
+	endDay, err := common.ParseDate(*endDate)
 	if err != nil {
 		return nil, fmt.Errorf("bad end_date %q: %w", *endDate, err)
 	}
@@ -99,16 +87,4 @@ func LoadConfig(args []string) (*Config, error) {
 		OutDir:      *outDir,
 		RescanFail:  *rescanFail,
 	}, nil
-}
-
-func envInt(key string, fallback int) int {
-	v := os.Getenv(key)
-	if v == "" {
-		return fallback
-	}
-	var n int
-	if _, err := fmt.Sscanf(v, "%d", &n); err != nil {
-		return fallback
-	}
-	return n
 }

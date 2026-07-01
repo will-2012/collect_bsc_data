@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"bsc_stats/common"
 )
 
 // --- block range resolution by timestamp (binary search) ---
@@ -28,14 +30,14 @@ func TestFindStartBlock(t *testing.T) {
 		target int64
 		want   int64
 	}{
-		{target: 1000, want: 0},  // exact first
-		{target: 1001, want: 1},  // between 1000 and 1010 => first >= is block 1
-		{target: 1010, want: 1},  // exact
-		{target: 1055, want: 6},  // ts(5)=1050, ts(6)=1060 => 6
-		{target: 990, want: 0},   // before all => block 0
+		{target: 1000, want: 0}, // exact first
+		{target: 1001, want: 1}, // between 1000 and 1010 => first >= is block 1
+		{target: 1010, want: 1}, // exact
+		{target: 1055, want: 6}, // ts(5)=1050, ts(6)=1060 => 6
+		{target: 990, want: 0},  // before all => block 0
 	}
 	for _, tc := range cases {
-		got, err := findStartBlock(ctx, c, 0, m.latest, tc.target)
+		got, err := common.FindStartBlock(ctx, c, 0, m.latest, tc.target)
 		if err != nil {
 			t.Fatalf("target=%d: %v", tc.target, err)
 		}
@@ -62,7 +64,7 @@ func TestFindEndBlock(t *testing.T) {
 		{target: 1060, want: 6},  // exact
 	}
 	for _, tc := range cases {
-		got, err := findEndBlock(ctx, c, 0, m.latest, tc.target)
+		got, err := common.FindEndBlock(ctx, c, 0, m.latest, tc.target)
 		if err != nil {
 			t.Fatalf("target=%d: %v", tc.target, err)
 		}
@@ -82,11 +84,11 @@ func TestResolveRange(t *testing.T) {
 	}
 	c := m.client()
 
-	start, _ := parseDate("2025-05-01")
-	endDay, _ := parseDate("2025-05-02")
-	cfg := &Config{StartDate: start, EndDate: endDay.Add(24*time.Hour - time.Second)}
+	start, _ := common.ParseDate("2025-05-01")
+	endDay, _ := common.ParseDate("2025-05-02")
+	endInclusive := endDay.Add(24*time.Hour - time.Second)
 
-	sb, eb, err := resolveRange(context.Background(), c, cfg)
+	sb, eb, err := common.ResolveRange(context.Background(), c, start, endInclusive)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -118,7 +120,7 @@ func TestGetBlockAndStats(t *testing.T) {
 		},
 	})
 	c := m.client()
-	b, err := c.GetBlock(context.Background(), 1)
+	b, err := GetBlock(context.Background(), c, 1)
 	if err != nil {
 		t.Fatal(err)
 	}

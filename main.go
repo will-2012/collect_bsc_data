@@ -5,6 +5,7 @@ import (
 	"os"
 
 	"bsc_stats/collecttop"
+	"bsc_stats/importmysql"
 )
 
 func main() {
@@ -18,6 +19,8 @@ func main() {
 	switch cmd {
 	case "collect-top":
 		collecttop.Run(args)
+	case "import-mysql":
+		importmysql.Run(args)
 	default:
 		log.Printf("unknown subcommand %q", cmd)
 		usage()
@@ -26,6 +29,6 @@ func main() {
 }
 
 func usage() {
-	log.Printf("usage: %s <subcommand> [flags]\n\nsubcommands:\n  collect-top  scan a block/date range and report top-N transaction senders",
+	log.Printf("usage: %s <subcommand> [flags]\n\nsubcommands:\n  collect-top   scan a block/date range and report top-N transaction senders\n  import-mysql  import block/tx data into MySQL for time-range gas-share queries",
 		os.Args[0])
 }

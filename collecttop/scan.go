@@ -8,36 +8,25 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	"bsc_stats/common"
 )
 
 // Scanner drives the chunked, concurrent block scan.
 type Scanner struct {
 	cfg      *Config
-	client   *Client
-	failed   *FailedLog
-	progress *Progress
+	client   *common.Client
+	failed   *common.FailedLog
+	progress *common.Progress
 }
 
-func newScanner(cfg *Config, client *Client, failed *FailedLog, progress *Progress) *Scanner {
+func newScanner(cfg *Config, client *common.Client, failed *common.FailedLog, progress *common.Progress) *Scanner {
 	return &Scanner{cfg: cfg, client: client, failed: failed, progress: progress}
-}
-
-// chunkBounds returns the inclusive [start,end] block ranges for each chunk.
-func chunkBounds(startBlock, endBlock, chunkSize int64) [][2]int64 {
-	var chunks [][2]int64
-	for s := startBlock; s <= endBlock; s += chunkSize {
-		e := s + chunkSize - 1
-		if e > endBlock {
-			e = endBlock
-		}
-		chunks = append(chunks, [2]int64{s, e})
-	}
-	return chunks
 }
 
 // Run scans all chunks. Completed chunks (result file present) are skipped.
 func (s *Scanner) Run(ctx context.Context, startBlock, endBlock int64) error {
-	chunks := chunkBounds(startBlock, endBlock, s.cfg.ChunkSize)
+	chunks := common.ChunkBounds(startBlock, endBlock, s.cfg.ChunkSize)
 	log.Printf("scanning blocks %d..%d in %d chunks (chunk_size=%d, concurrency=%d)",
 		startBlock, endBlock, len(chunks), s.cfg.ChunkSize, s.cfg.Concurrency)
 
@@ -49,7 +38,7 @@ func (s *Scanner) Run(ctx context.Context, startBlock, endBlock int64) error {
 		fname := chunkFileName(s.cfg.OutDir, cs)
 		if _, err := os.Stat(fname); err == nil {
 			// Already completed: count its blocks toward progress and skip.
-			s.progress.addBlocks(ce - cs + 1)
+			s.progress.AddBlocks(ce - cs + 1)
 			log.Printf("chunk %d..%d already done, skipping", cs, ce)
 			continue
 		}
@@ -78,7 +67,7 @@ func (s *Scanner) scanChunk(ctx context.Context, start, end int64) error {
 			defer wg.Done()
 			defer func() { <-sem }()
 
-			b, err := s.client.GetBlock(ctx, blockNum)
+			b, err := GetBlock(ctx, s.client, blockNum)
 			if err != nil {
 				if ctx.Err() == nil {
 					// Buffer the failure on the chunk result; it is flushed to the
@@ -86,19 +75,19 @@ func (s *Scanner) scanChunk(ctx context.Context, start, end int64) error {
 					// interrupted before that, the failure is dropped so the redone
 					// chunk on resume does not leave a stale, double-counted entry.
 					mu.Lock()
-					cr.Failed = append(cr.Failed, FailedBlock{Block: blockNum, Reason: err.Error()})
+					cr.Failed = append(cr.Failed, common.FailedBlock{Block: blockNum, Reason: err.Error()})
 					mu.Unlock()
-					s.progress.addFailed(1)
+					s.progress.AddFailed(1)
 				}
 				// Block still counts as "processed" for progress so ETA stays sane.
-				s.progress.addBlocks(1)
+				s.progress.AddBlocks(1)
 				return
 			}
 			mu.Lock()
 			cr.addBlock(b)
 			mu.Unlock()
-			s.progress.addBlocks(1)
-			s.progress.addTx(int64(len(b.Transactions)))
+			s.progress.AddBlocks(1)
+			s.progress.AddTx(int64(len(b.Transactions)))
 		}(n)
 	}
 	wg.Wait()
@@ -122,7 +111,7 @@ func (s *Scanner) scanChunk(ctx context.Context, start, end int64) error {
 // fetched blocks are folded into a dedicated rescan chunk file; the log is then
 // cleared. Blocks that fail again are written back to a fresh log.
 func (s *Scanner) RescanFailed(ctx context.Context) error {
-	blocks, err := readFailedBlocks(s.cfg.OutDir)
+	blocks, err := common.ReadFailedBlocks(s.cfg.OutDir)
 	if err != nil {
 		return err
 	}
@@ -148,7 +137,7 @@ func (s *Scanner) RescanFailed(ctx context.Context) error {
 		go func(blockNum int64) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			b, err := s.client.GetBlock(ctx, blockNum)
+			b, err := GetBlock(ctx, s.client, blockNum)
 			if err != nil {
 				failMu.Lock()
 				stillFailed = append(stillFailed, blockNum)
@@ -175,11 +164,11 @@ func (s *Scanner) RescanFailed(ctx context.Context) error {
 	}
 
 	// Rewrite the failed log with only the blocks that failed again.
-	if err := truncateFailedLog(s.cfg.OutDir); err != nil {
+	if err := common.TruncateFailedLog(s.cfg.OutDir); err != nil {
 		return err
 	}
 	if len(stillFailed) > 0 {
-		fl, err := openFailedLog(s.cfg.OutDir)
+		fl, err := common.OpenFailedLog(s.cfg.OutDir)
 		if err != nil {
 			return err
 		}
