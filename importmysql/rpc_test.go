@@ -69,7 +69,7 @@ func TestFetchBlockUsesReceiptGasUsed(t *testing.T) {
 		"transactions": []string{tHash},
 	}
 	m.receipts = []map[string]interface{}{
-		{"transactionHash": tHash, "from": from1, "to": to1, "gasUsed": "0x2710"}, // 10000
+		{"transactionHash": tHash, "from": from1, "to": to1, "gasUsed": "0x2710", "blockHash": bHash, "blockNumber": "0x64"}, // 10000
 	}
 
 	bd, err := FetchBlock(context.Background(), m.client(), 100)
@@ -106,7 +106,7 @@ func TestFetchBlockContractCreationNilTo(t *testing.T) {
 		"gasUsed": "0x1", "gasLimit": "0x2", "transactions": []string{tHash},
 	}
 	m.receipts = []map[string]interface{}{
-		{"transactionHash": tHash, "from": from1, "to": nil, "gasUsed": "0x1"},
+		{"transactionHash": tHash, "from": from1, "to": nil, "gasUsed": "0x1", "blockHash": bHash, "blockNumber": "0x1"},
 	}
 	bd, err := FetchBlock(context.Background(), m.client(), 1)
 	if err != nil {
@@ -129,5 +129,22 @@ func TestFetchBlockReceiptCountMismatch(t *testing.T) {
 	}
 	if _, err := FetchBlock(context.Background(), m.client(), 1); err == nil {
 		t.Fatal("expected error on receipt/tx count mismatch")
+	}
+}
+
+// Receipts whose blockHash disagrees with the header must be rejected (guards
+// against a sibling/reorged/stale-cached receipts batch from a load-balanced node).
+func TestFetchBlockRejectsWrongBlockReceipts(t *testing.T) {
+	m := newRPCMock(t)
+	m.header = map[string]interface{}{
+		"number": "0x1", "hash": bHash, "timestamp": "0x1",
+		"gasUsed": "0x1", "gasLimit": "0x2", "transactions": []string{tHash},
+	}
+	otherHash := "0x99" + strings.Repeat("00", 31)
+	m.receipts = []map[string]interface{}{
+		{"transactionHash": tHash, "from": from1, "to": to1, "gasUsed": "0x1", "blockHash": otherHash, "blockNumber": "0x1"},
+	}
+	if _, err := FetchBlock(context.Background(), m.client(), 1); err == nil {
+		t.Fatal("expected error when receipt blockHash != header hash")
 	}
 }

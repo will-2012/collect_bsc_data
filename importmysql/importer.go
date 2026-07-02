@@ -104,15 +104,16 @@ func (im *Importer) importChunk(ctx context.Context, start, end int64) error {
 
 // RescanFailed re-imports the blocks recorded in import_failed. Recovered blocks
 // are removed from the failed table; blocks that fail again keep their (updated)
-// entry for a later retry.
-func (im *Importer) RescanFailed(ctx context.Context) error {
+// entry for a later retry. It returns how many blocks are still failing after the
+// pass.
+func (im *Importer) RescanFailed(ctx context.Context) (int, error) {
 	blocks, err := im.db.ReadFailed(ctx)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	if len(blocks) == 0 {
 		log.Printf("no failed blocks to re-import")
-		return nil
+		return 0, nil
 	}
 	log.Printf("re-importing %d failed blocks", len(blocks))
 
@@ -153,8 +154,8 @@ func (im *Importer) RescanFailed(ctx context.Context) error {
 	}
 	wg.Wait()
 	if ctx.Err() != nil {
-		return ctx.Err()
+		return 0, ctx.Err()
 	}
 	log.Printf("re-import complete: recovered %d, still failed %d", recovered, stillFailed)
-	return nil
+	return stillFailed, nil
 }

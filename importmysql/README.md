@@ -194,6 +194,7 @@ Retry blocks that failed all retries, then exit:
 | `-db_conns` | `BSC_DB_CONNS` | `16` | Max concurrent MySQL writers |
 | `-chunk_size` | `BSC_CHUNK_SIZE` | `10000` | Blocks per resumable chunk |
 | `-progress_interval` | — | `1m` | Interval between progress log lines |
+| `-confirmations` | — | `15` | Skip blocks within this many of chain head (reorg safety) |
 | `-start_date` | `BSC_START_DATE` | `2025-05-01` | Inclusive UTC start date (YYYY-MM-DD) |
 | `-end_date` | `BSC_END_DATE` | `2026-06-30` | Inclusive UTC end date (YYYY-MM-DD) |
 | `-start_block` | — | `-1` | Explicit inclusive start block (with `-end_block`, overrides dates) |
@@ -222,22 +223,29 @@ FROM (
 ) m;
 ```
 
-**(b) Gas-used share** vs block gas_used AND block gas_limit, over the blocks the
-matching txs touch (numerator index-only; denominators are `block` PK lookups):
+**(b) Gas-used share** = matching tx gas ÷ **all** block gas in the window (both
+vs `gas_used` and vs `gas_limit`). The denominator is every block in the range,
+NOT only matched blocks — this is "what fraction of total chain gas this set
+consumed". (Numerator is index-only on `idx_to_time`; block sums are index-only
+on `idx_block_time_gas`.)
 
 ```sql
-WITH matched AS (
-  SELECT DISTINCT block_number, gas_used, hash FROM tx
-   WHERE to_addr IN (UNHEX('55d3…')) AND block_time BETWEEN :t0 AND :t1
-)
-SELECT (SELECT SUM(gas_used) FROM matched)                                  AS tx_gas_used,
-       SUM(b.gas_used)                                                      AS blk_gas_used,
-       SUM(b.gas_limit)                                                     AS blk_gas_limit,
-       (SELECT SUM(gas_used) FROM matched) / SUM(b.gas_used)                AS share_of_used,
-       (SELECT SUM(gas_used) FROM matched) / SUM(b.gas_limit)               AS share_of_limit
-FROM block b
-WHERE b.number IN (SELECT DISTINCT block_number FROM matched);
+SELECT
+  (SELECT SUM(gas_used)  FROM tx    WHERE to_addr IN (UNHEX('55d3…')) AND block_time BETWEEN :t0 AND :t1) AS tx_gas_used,
+  (SELECT SUM(gas_used)  FROM block WHERE block_time BETWEEN :t0 AND :t1)                                  AS blk_gas_used,
+  (SELECT SUM(gas_limit) FROM block WHERE block_time BETWEEN :t0 AND :t1)                                  AS blk_gas_limit,
+  (SELECT SUM(gas_used) FROM tx WHERE to_addr IN (UNHEX('55d3…')) AND block_time BETWEEN :t0 AND :t1)
+    / (SELECT SUM(gas_used)  FROM block WHERE block_time BETWEEN :t0 AND :t1) AS share_of_used,
+  (SELECT SUM(gas_used) FROM tx WHERE to_addr IN (UNHEX('55d3…')) AND block_time BETWEEN :t0 AND :t1)
+    / (SELECT SUM(gas_limit) FROM block WHERE block_time BETWEEN :t0 AND :t1) AS share_of_limit;
 ```
+
+> **Attribution caveat**: `tx.gas_used` is the receipt's top-level gas, attributed
+> to the tx's *top-level* `from`/`to`. So a set matched on `to_addr` counts gas of
+> txs *directly addressed* to those contracts and **excludes** gas where they are
+> reached via internal calls from a router/aggregator (and includes the tx's own
+> downstream internal-call gas). Execution-level attribution would need tracing
+> (`debug_traceTransaction`), which this importer does not collect.
 
 **(c) Block coverage** = matched blocks / all blocks in the range:
 
@@ -262,7 +270,37 @@ ORDER BY MIN(block_time);
 ```
 
 Run window-based views (12/6/3/1-month) by setting `:t0 = :t1 - Δ`; segment by
-gas-limit era by using each era's `[first, last]` as `:t0/:t1`. For a consistent
-snapshot during a live import, wrap the queries in one `REPEATABLE READ`
-transaction. Do **not** sum shares across address groups — a tx can belong to a
-`from` group and a `to` group at once.
+gas-limit era by using each era's `[first, last]` as `:t0/:t1` (use half-open
+bounds — `>= first AND < next_first` — so a block at a shared boundary second
+isn't counted in two eras).
+
+Notes:
+- **`both`-side sets** (a wallet matched as either sender or receiver): match with
+  `WHERE from_addr IN (…) OR to_addr IN (…)` and aggregate once (one row per tx →
+  no double count). If you instead `UNION` two per-side queries, dedup on
+  `tx.hash` only.
+- **Complements / totals**: `to_addr NOT IN (…)` silently drops contract-creation
+  txs (`to_addr IS NULL`); add `OR to_addr IS NULL` if they should be included, or
+  take the total from the `block` table.
+- Do **not** sum shares across address groups — a tx can belong to a `from` group
+  and a `to` group at once.
+- For a consistent snapshot during a live import, wrap the queries in one
+  `REPEATABLE READ` transaction with `@t1` pinned once.
+
+## Completeness & operability
+
+- A run is complete only when it exits **0**. It exits non-zero (and logs a
+  `WARNING`) if any block still fails after the automatic compensation rounds, or
+  if the whole-range block-coverage check finds a gap. For an unattended
+  (cron) backfill, treat a non-zero exit as an alert.
+- Authoritative completeness check: `SELECT COUNT(*) FROM import_failed` must be
+  `0`, and `SELECT COUNT(*) FROM block WHERE number BETWEEN :start AND :end` must
+  equal `:end-:start+1`.
+- For a resumable production backfill, prefer explicit `-start_block/-end_block`
+  so the chunk grid (resume key) is stable across runs; changing `-start_date` or
+  `-chunk_size` between resumes shifts the grid.
+- **Reorg safety**: `-confirmations` (default 15) keeps the import a margin below
+  chain head. Blocks are written with idempotent no-op upserts, so a block
+  imported before finality that later reorgs would NOT be healed on re-import —
+  hence never import within finality of head. Historical backfills (end well in
+  the past) are unaffected.

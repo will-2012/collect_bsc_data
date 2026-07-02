@@ -52,6 +52,8 @@ type rpcReceipt struct {
 	From            string  `json:"from"`
 	To              *string `json:"to"`
 	GasUsed         string  `json:"gasUsed"`
+	BlockHash       string  `json:"blockHash"`
+	BlockNumber     string  `json:"blockNumber"`
 }
 
 // FetchBlock retrieves a block header and its receipts and assembles a BlockData.
@@ -98,10 +100,29 @@ func FetchBlock(ctx context.Context, c *common.Client, n int64) (*BlockData, err
 	if len(receipts) != bd.TxCount {
 		return nil, fmt.Errorf("block %d: %d receipts != %d transactions", n, len(receipts), bd.TxCount)
 	}
+	// The header and receipts come from two independent calls against a
+	// load-balanced endpoint. Verify they describe the SAME block: every receipt
+	// must carry this block's hash+number, and the receipt tx-hash set must equal
+	// the header's tx list (not just match in count). This rejects a sibling/
+	// reorged/stale-cached receipts batch that would otherwise stamp the header's
+	// hash/time onto txs that don't belong to it.
+	headerTxs := make(map[string]bool, len(h.Transactions))
+	for _, th := range h.Transactions {
+		headerTxs[strings.ToLower(th)] = true
+	}
 
 	bd.Txs = make([]TxData, 0, len(receipts))
 	for i := range receipts {
 		r := &receipts[i]
+		if !strings.EqualFold(r.BlockHash, h.Hash) {
+			return nil, fmt.Errorf("block %d: receipt blockHash %s != header %s", n, r.BlockHash, h.Hash)
+		}
+		if rn, err := common.ParseHexInt(r.BlockNumber); err != nil || rn != n {
+			return nil, fmt.Errorf("block %d: receipt blockNumber %s mismatch", n, r.BlockNumber)
+		}
+		if !headerTxs[strings.ToLower(r.TransactionHash)] {
+			return nil, fmt.Errorf("block %d: receipt tx %s not in header tx set", n, r.TransactionHash)
+		}
 		tx := TxData{BlockNumber: n, BlockHash: bd.Hash, BlockTime: bd.Time}
 		if tx.Hash, err = decodeHex(r.TransactionHash, 32); err != nil {
 			return nil, fmt.Errorf("tx hash: %w", err)

@@ -39,7 +39,7 @@ func Run(args []string) {
 	// Re-scan mode: only re-import previously failed blocks, then exit.
 	if cfg.RescanFail {
 		im := newImporter(cfg, client, db, common.NewProgress(0))
-		residual, err := compensate(ctx, db, im)
+		residual, err := compensate(ctx, im)
 		if err != nil {
 			exitOnCompensateErr(ctx, err)
 		}
@@ -63,6 +63,21 @@ func Run(args []string) {
 			log.Fatalf("resolve range: %v", err)
 		}
 	}
+	// Reorg safety: never import within Confirmations of chain head. A block
+	// imported before finality that later reorgs cannot be healed (upserts are
+	// no-ops), so cap the end below head. For a historical backfill this is a
+	// no-op; it only bites a run whose end approaches head.
+	if head, err := client.BlockNumber(ctx); err != nil {
+		log.Printf("warning: could not read chain head for confirmations cap: %v", err)
+	} else if safeEnd := head - cfg.Confirmations; endBlock > safeEnd {
+		if safeEnd < startBlock {
+			log.Fatalf("range %d..%d is within %d confirmations of head %d; nothing safe to import",
+				startBlock, endBlock, cfg.Confirmations, head)
+		}
+		log.Printf("capping end block %d -> %d (head %d - %d confirmations)", endBlock, safeEnd, head, cfg.Confirmations)
+		endBlock = safeEnd
+	}
+
 	totalBlocks := endBlock - startBlock + 1
 	log.Printf("block range resolved: %d .. %d (%d blocks)", startBlock, endBlock, totalBlocks)
 
@@ -84,12 +99,23 @@ func Run(args []string) {
 	// Compensate: automatically re-import any blocks that exhausted retries so a
 	// normal run reaches full coverage without a separate manual pass. If some
 	// still fail, exit non-zero so a partial import is not mistaken for complete.
-	residual, err := compensate(ctx, db, im)
+	residual, err := compensate(ctx, im)
 	if err != nil {
 		exitOnCompensateErr(ctx, err)
 	}
 	if residual > 0 {
 		log.Printf("WARNING: %d block(s) still failed after compensation; rerun with -rescan_failed later", residual)
+		os.Exit(1)
+	}
+
+	// Whole-range coverage assertion: within-chunk continuity is guaranteed, but
+	// this catches a range that was never fully covered (e.g. a changed
+	// start_block/chunk_size across resumes shifting the chunk grid).
+	if n, err := db.CountBlocks(ctx, startBlock, endBlock); err != nil {
+		log.Printf("warning: coverage check failed: %v", err)
+	} else if expected := endBlock - startBlock + 1; n < expected {
+		log.Printf("WARNING: coverage %d/%d blocks in %d..%d — %d missing; not a complete import",
+			n, expected, startBlock, endBlock, expected-n)
 		os.Exit(1)
 	}
 	log.Printf("import complete")
@@ -100,25 +126,19 @@ const maxRescanRounds = 3
 
 // compensate re-imports failed blocks (idempotently) until none remain or the
 // round budget is spent. Returns the count of blocks still failing.
-func compensate(ctx context.Context, db *DB, im *Importer) (int, error) {
+func compensate(ctx context.Context, im *Importer) (int, error) {
+	var still int
 	for r := 1; r <= maxRescanRounds; r++ {
-		failed, err := db.ReadFailed(ctx)
+		n, err := im.RescanFailed(ctx)
 		if err != nil {
 			return 0, err
 		}
-		if len(failed) == 0 {
-			return 0, nil
-		}
-		log.Printf("compensating %d failed block(s) (round %d/%d)", len(failed), r, maxRescanRounds)
-		if err := im.RescanFailed(ctx); err != nil {
-			return 0, err
+		still = n
+		if still == 0 {
+			break
 		}
 	}
-	failed, err := db.ReadFailed(ctx)
-	if err != nil {
-		return 0, err
-	}
-	return len(failed), nil
+	return still, nil
 }
 
 // exitOnCompensateErr exits: 1 (resumable) if interrupted, else fatal.

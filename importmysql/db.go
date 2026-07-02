@@ -217,6 +217,14 @@ func (db *DB) MarkChunkDone(ctx context.Context, start, end int64, failures []co
 	})
 }
 
+// CountBlocks returns how many block rows exist in the inclusive [start,end] range.
+func (db *DB) CountBlocks(ctx context.Context, start, end int64) (int64, error) {
+	var n int64
+	err := db.sql.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM block WHERE number BETWEEN ? AND ?`, start, end).Scan(&n)
+	return n, err
+}
+
 // ReadFailed returns the block numbers currently recorded as failed.
 func (db *DB) ReadFailed(ctx context.Context) ([]int64, error) {
 	rows, err := db.sql.QueryContext(ctx, `SELECT block_number FROM import_failed ORDER BY block_number`)

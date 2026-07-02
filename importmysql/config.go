@@ -10,17 +10,18 @@ import (
 
 // Config holds runtime configuration for the import-mysql subcommand.
 type Config struct {
-	Endpoint    string
-	DSN         string // go-sql-driver MySQL DSN
-	Concurrency int    // RPC fetch concurrency
-	DBConns     int    // max concurrent MySQL writers (kept well below Concurrency)
-	StartDate   time.Time
-	EndDate     time.Time
-	StartBlock  int64 // >=0 with EndBlock overrides the date range
-	EndBlock    int64
-	ChunkSize   int64
-	RescanFail  bool          // re-import blocks recorded as failed, then exit
-	Progress    time.Duration // interval between progress log lines
+	Endpoint      string
+	DSN           string // go-sql-driver MySQL DSN
+	Concurrency   int    // RPC fetch concurrency
+	DBConns       int    // max concurrent MySQL writers (kept well below Concurrency)
+	StartDate     time.Time
+	EndDate       time.Time
+	StartBlock    int64 // >=0 with EndBlock overrides the date range
+	EndBlock      int64
+	ChunkSize     int64
+	RescanFail    bool          // re-import blocks recorded as failed, then exit
+	Progress      time.Duration // interval between progress log lines
+	Confirmations int64         // don't import blocks within this many of chain head (reorg safety)
 }
 
 // BlockRangeOverride reports whether explicit start/end blocks were given.
@@ -36,6 +37,7 @@ func LoadConfig(args []string) (*Config, error) {
 		dbConns     = fs.Int("db_conns", common.EnvInt("BSC_DB_CONNS", 16), "max concurrent MySQL writers (keep well below concurrency)")
 		chunkSize   = fs.Int64("chunk_size", int64(common.EnvInt("BSC_CHUNK_SIZE", 10000)), "blocks per resumable chunk")
 		progress    = fs.Duration("progress_interval", time.Minute, "interval between progress log lines")
+		confirms    = fs.Int64("confirmations", 15, "skip blocks within this many of chain head (reorg safety)")
 		startDate   = fs.String("start_date", common.EnvOr("BSC_START_DATE", "2025-05-01"), "inclusive UTC start date YYYY-MM-DD")
 		endDate     = fs.String("end_date", common.EnvOr("BSC_END_DATE", "2026-06-30"), "inclusive UTC end date YYYY-MM-DD")
 		startBlock  = fs.Int64("start_block", -1, "explicit inclusive start block (overrides dates; requires end_block)")
@@ -77,6 +79,9 @@ func LoadConfig(args []string) (*Config, error) {
 	if *progress < time.Second {
 		return nil, fmt.Errorf("progress_interval must be >= 1s")
 	}
+	if *confirms < 0 {
+		return nil, fmt.Errorf("confirmations must be >= 0")
+	}
 	if (*startBlock >= 0) != (*endBlock >= 0) {
 		return nil, fmt.Errorf("start_block and end_block must be set together")
 	}
@@ -85,16 +90,17 @@ func LoadConfig(args []string) (*Config, error) {
 	}
 
 	return &Config{
-		Endpoint:    *endpoint,
-		DSN:         *dsn,
-		Concurrency: *concurrency,
-		DBConns:     *dbConns,
-		StartDate:   start,
-		EndDate:     end,
-		StartBlock:  *startBlock,
-		EndBlock:    *endBlock,
-		ChunkSize:   *chunkSize,
-		RescanFail:  *rescanFail,
-		Progress:    *progress,
+		Endpoint:      *endpoint,
+		DSN:           *dsn,
+		Concurrency:   *concurrency,
+		DBConns:       *dbConns,
+		StartDate:     start,
+		EndDate:       end,
+		StartBlock:    *startBlock,
+		EndBlock:      *endBlock,
+		ChunkSize:     *chunkSize,
+		RescanFail:    *rescanFail,
+		Progress:      *progress,
+		Confirmations: *confirms,
 	}, nil
 }

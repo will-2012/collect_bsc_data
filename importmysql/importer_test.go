@@ -19,7 +19,7 @@ func oneBlockRPC(t *testing.T) *common.Client {
 		"gasUsed": "0x1", "gasLimit": "0x2", "transactions": []string{tHash},
 	}
 	m.receipts = []map[string]interface{}{
-		{"transactionHash": tHash, "from": from1, "to": to1, "gasUsed": "0x1"},
+		{"transactionHash": tHash, "from": from1, "to": to1, "gasUsed": "0x1", "blockHash": bHash, "blockNumber": "0x5"},
 	}
 	return m.client()
 }
@@ -35,7 +35,7 @@ func TestCompensateNoFailures(t *testing.T) {
 	mock.ExpectQuery("SELECT block_number FROM import_failed").
 		WillReturnRows(sqlmock.NewRows([]string{"block_number"}))
 	im := newImporter(testCfg(), nil, db, common.NewProgress(0))
-	residual, err := compensate(context.Background(), db, im)
+	residual, err := compensate(context.Background(), im)
 	if err != nil || residual != 0 {
 		t.Fatalf("residual=%d err=%v want 0/nil", residual, err)
 	}
