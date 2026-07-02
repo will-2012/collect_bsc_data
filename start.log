@@ -1,0 +1,6 @@
+2026/06/30 02:27:24 resolving block range for 2025-05-01T00:00:00Z .. 2026-06-30T23:59:59Z (UTC)
+2026/06/30 02:27:40 block range resolved: 48876398 .. 107172843 (58296446 blocks)
+2026/06/30 02:27:40 scanning blocks 48876398..107172843 in 583 chunks (chunk_size=100000, concurrency=500)
+2026/06/30 02:37:40 progress: 24670/58296446 blocks (0.04%), tx=1963535, failed=0, elapsed=10m0s, eta=393h40m34s
+2026/06/30 02:39:34 progress: 29070/58296446 blocks (0.05%), tx=2371408, failed=0, elapsed=11m54s, eta=397h44m12s
+2026/06/30 02:39:34 scan interrupted (context canceled); completed chunks are saved, restart to resume

@@ -29,8 +29,8 @@ func sampleBlock() *BlockData {
 	return &BlockData{
 		Number: 100, Hash: h, Time: 5, GasUsed: 1000, GasLimit: 2000, TxCount: 2,
 		Txs: []TxData{
-			{Hash: h, BlockNumber: 100, BlockHash: h, BlockTime: 5, GasUsed: 10, From: a, To: a},
-			{Hash: h, BlockNumber: 100, BlockHash: h, BlockTime: 5, GasUsed: 20, From: a, To: nil},
+			{BlockNumber: 100, TxIndex: 0, Hash: h, BlockHash: h, BlockTime: 5, GasUsed: 10, From: a, To: a},
+			{BlockNumber: 100, TxIndex: 1, Hash: h, BlockHash: h, BlockTime: 5, GasUsed: 20, From: a, To: nil},
 		},
 	}
 }

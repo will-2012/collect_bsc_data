@@ -69,7 +69,7 @@ func TestFetchBlockUsesReceiptGasUsed(t *testing.T) {
 		"transactions": []string{tHash},
 	}
 	m.receipts = []map[string]interface{}{
-		{"transactionHash": tHash, "from": from1, "to": to1, "gasUsed": "0x2710", "blockHash": bHash, "blockNumber": "0x64"}, // 10000
+		{"transactionHash": tHash, "transactionIndex": "0x0", "from": from1, "to": to1, "gasUsed": "0x2710", "blockHash": bHash, "blockNumber": "0x64"}, // 10000
 	}
 
 	bd, err := FetchBlock(context.Background(), m.client(), 100)
@@ -97,6 +97,9 @@ func TestFetchBlockUsesReceiptGasUsed(t *testing.T) {
 	if tx.BlockTime != 5 || tx.BlockNumber != 100 {
 		t.Errorf("denormalized block fields wrong: time=%d num=%d", tx.BlockTime, tx.BlockNumber)
 	}
+	if tx.TxIndex != 0 {
+		t.Errorf("tx.TxIndex=%d want 0", tx.TxIndex)
+	}
 }
 
 func TestFetchBlockContractCreationNilTo(t *testing.T) {
@@ -106,7 +109,7 @@ func TestFetchBlockContractCreationNilTo(t *testing.T) {
 		"gasUsed": "0x1", "gasLimit": "0x2", "transactions": []string{tHash},
 	}
 	m.receipts = []map[string]interface{}{
-		{"transactionHash": tHash, "from": from1, "to": nil, "gasUsed": "0x1", "blockHash": bHash, "blockNumber": "0x1"},
+		{"transactionHash": tHash, "transactionIndex": "0x0", "from": from1, "to": nil, "gasUsed": "0x1", "blockHash": bHash, "blockNumber": "0x1"},
 	}
 	bd, err := FetchBlock(context.Background(), m.client(), 1)
 	if err != nil {
@@ -129,6 +132,26 @@ func TestFetchBlockReceiptCountMismatch(t *testing.T) {
 	}
 	if _, err := FetchBlock(context.Background(), m.client(), 1); err == nil {
 		t.Fatal("expected error on receipt/tx count mismatch")
+	}
+}
+
+// Two receipts sharing a transactionIndex must be rejected: tx_index is part of
+// the PK, so a duplicate would otherwise be silently absorbed by the upsert and
+// drop a tx undetected.
+func TestFetchBlockRejectsDuplicateTxIndex(t *testing.T) {
+	m := newRPCMock(t)
+	tHash2 := "0x33" + strings.Repeat("00", 31)
+	m.header = map[string]interface{}{
+		"number": "0x1", "hash": bHash, "timestamp": "0x1",
+		"gasUsed": "0x2", "gasLimit": "0x4", "transactions": []string{tHash, tHash2},
+	}
+	// Both receipts claim transactionIndex 0x0 (non-spec); everything else valid.
+	m.receipts = []map[string]interface{}{
+		{"transactionHash": tHash, "transactionIndex": "0x0", "from": from1, "to": to1, "gasUsed": "0x1", "blockHash": bHash, "blockNumber": "0x1"},
+		{"transactionHash": tHash2, "transactionIndex": "0x0", "from": from1, "to": to1, "gasUsed": "0x1", "blockHash": bHash, "blockNumber": "0x1"},
+	}
+	if _, err := FetchBlock(context.Background(), m.client(), 1); err == nil {
+		t.Fatal("expected error on duplicate transactionIndex")
 	}
 }
 

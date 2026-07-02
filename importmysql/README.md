@@ -12,8 +12,9 @@ Two data tables (plus two bookkeeping tables for resume/retry):
 **`block`** — one row per block: `number` (PK), `hash`, `block_time` (unix
 seconds), `gas_used`, `gas_limit`, `tx_count`.
 
-**`tx`** — one row per transaction: `hash` (PK), `block_number`, `block_hash`,
-`block_time`, `gas_used`, `from_addr`, `to_addr` (NULL for contract creation).
+**`tx`** — one row per transaction, keyed by `(block_number, tx_index)` (the
+tx's on-chain position in its block): `hash`, `block_hash`, `block_time`,
+`gas_used`, `from_addr`, `to_addr` (NULL for contract creation).
 
 `tx.gas_used` is the **real gas consumed**, taken from the transaction receipt
 (`eth_getBlockReceipts`) — not the block body's per-tx `gas` field, which is the
@@ -23,7 +24,9 @@ gas *limit*. Getting this right is the whole point of the metric.
 
 The importer runs these `CREATE TABLE IF NOT EXISTS` statements on startup
 (source: `db.go`), so a fresh database is usable without a separate migration.
-MySQL 8.0+, InnoDB.
+MySQL 8.0+, InnoDB. **Only primary keys are created during import** — the
+analysis (secondary) indexes are built afterward in one pass; see
+[Post-import indexes](#post-import-indexes) for why and how.
 
 ```sql
 CREATE TABLE IF NOT EXISTS block (
@@ -33,32 +36,23 @@ CREATE TABLE IF NOT EXISTS block (
     gas_used    BIGINT UNSIGNED NOT NULL,
     gas_limit   BIGINT UNSIGNED NOT NULL,
     tx_count    INT    UNSIGNED NOT NULL,
-    PRIMARY KEY (number),
-    -- denominators of the gas-share query (COUNT/SUM over a time range),
-    -- answered index-only from the leaf:
-    KEY idx_block_time_gas (block_time, gas_used, gas_limit),
-    -- gas_limit leading, so "which gas-limit eras exist + their time spans"
-    -- (GROUP BY gas_limit, MIN/MAX(block_time)) is a loose index scan over the
-    -- handful of distinct values, not a full-year table scan:
-    KEY idx_gas_limit (gas_limit, block_time)
+    PRIMARY KEY (number)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS tx (
-    hash          BINARY(32)      NOT NULL,         -- tx hash (PK)
-    block_number  BIGINT UNSIGNED NOT NULL,
+    block_number  BIGINT UNSIGNED NOT NULL,         -- FK-ish to block.number
+    tx_index      INT    UNSIGNED NOT NULL,         -- on-chain position in block
+    hash          BINARY(32)      NOT NULL,         -- tx hash (indexed post-import if needed)
     block_hash    BINARY(32)      NOT NULL,
     block_time    BIGINT UNSIGNED NOT NULL,         -- denormalized from block (unix seconds)
     gas_used      BIGINT UNSIGNED NOT NULL,         -- receipt gasUsed (real gas consumed)
     from_addr     BINARY(20)      NOT NULL,
     to_addr       BINARY(20)      NULL,             -- NULL for contract creation
-    PRIMARY KEY (hash),
-    -- covering indexes: (addr, block_time) equality+range prefix, with
-    -- block_number + gas_used in the leaf so the numerator's
-    -- COUNT(DISTINCT block_number) and SUM(gas_used) are index-only:
-    KEY idx_from_time (from_addr, block_time, block_number, gas_used),
-    KEY idx_to_time   (to_addr,   block_time, block_number, gas_used),
-    -- tx<->block reverse lookups (all txs of a block; join to block PK):
-    KEY idx_block_number (block_number)
+    -- (block_number, tx_index): near-sequential clustered-index inserts (a moving
+    -- per-chunk window that stays hot in the buffer pool) instead of the random
+    -- scatter a hash PK causes; also serves per-block lookups (WHERE block_number = ?)
+    -- from the PK prefix, so no separate block_number index is needed.
+    PRIMARY KEY (block_number, tx_index)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- Resume bookkeeping: a chunk is recorded here only after all its blocks commit.
@@ -79,12 +73,46 @@ CREATE TABLE IF NOT EXISTS import_failed (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 ```
 
-Why these fields/indexes (short version): addresses `BINARY(20)` / hashes
-`BINARY(32)` are raw bytes (~2× smaller than hex, so the hot `tx` indexes keep
-more of the buffer pool); `block_time` is unix seconds denormalized onto `tx` so
-the address + time-range query needs no join; the two `tx` covering indexes make
-the numerator index-only, and `idx_block_time_gas` does the same for the block
-denominators. See below for the full rationale.
+Why these fields (short version): addresses `BINARY(20)` / hashes `BINARY(32)`
+are raw bytes (~2× smaller than hex, so the analysis indexes keep more of the
+buffer pool); `block_time` is unix seconds denormalized onto `tx` so the address
++ time-range query needs no join; the `tx` PK `(block_number, tx_index)` keeps
+the bulk load off the disk's random-IO wall (near-sequential inserts). See below
+for the full rationale.
+
+## Post-import indexes
+
+The analysis queries below rely on secondary indexes that are **not** created
+during import. Maintaining them while inserting billions of rows turns each
+insert into several random reads+writes and saturates the disk's IOPS long
+before CPU/network — the disk becomes the bottleneck and the import crawls.
+Loading with primary keys only, then building the indexes once (a single
+sort-build, not per-row random IO), is dramatically faster overall.
+
+Run this **once, after the import (and its `-rescan_failed` compensation) has
+fully completed**:
+
+```sql
+ALTER TABLE tx
+    ADD INDEX idx_from_time (from_addr, block_time, gas_used),
+    ADD INDEX idx_to_time   (to_addr,   block_time, gas_used);
+
+ALTER TABLE block
+    ADD INDEX idx_block_time_gas (block_time, gas_used, gas_limit),
+    ADD INDEX idx_gas_limit      (gas_limit, block_time);
+
+-- Optional: only if you look transactions up by hash. Costs a large index on a
+-- huge table, so skip it unless you need it.
+-- ALTER TABLE tx ADD INDEX idx_hash (hash);
+```
+
+The `tx` indexes lead with the address and carry `block_time` + `gas_used`.
+InnoDB appends the primary key `(block_number, tx_index)` to every secondary
+index leaf, so `block_number` rides along for free — the numerator's
+`SUM(gas_used)` **and** `COUNT(DISTINCT block_number)` are both answered
+index-only, with no explicit `block_number` column needed in the index
+definition. `idx_block_time_gas` / `idx_gas_limit` answer the block-side
+denominators and gas-limit-era grouping index-only.
 
 ## The query this schema is built for
 
@@ -99,7 +127,7 @@ SELECT COUNT(*), SUM(gas_used), SUM(gas_limit)
 FROM block WHERE block_time BETWEEN ? AND ?;
 ```
 
-Numerator (matching txs) — served by `tx` covering index `(from_addr, block_time, block_number, gas_used)`:
+Numerator (matching txs) — served by `tx` covering index `(from_addr, block_time, gas_used)` (with `block_number` from InnoDB's PK suffix):
 
 ```sql
 SELECT COUNT(DISTINCT block_number), SUM(gas_used)
@@ -119,16 +147,22 @@ FROM tx WHERE from_addr = UNHEX(?) AND block_time BETWEEN ? AND ?;
   a single composite index answer `addr = ? AND block_time BETWEEN ? AND ?` in
   one range scan — no join to `block`. It is immutable (copied once at import),
   so it never drifts.
-- **Covering indexes.** `(addr, block_time, block_number, gas_used)` carries
-  everything the aggregate needs (`COUNT(DISTINCT block_number)`,
-  `SUM(gas_used)`) in the index leaf, avoiding a per-row primary-key lookup that
-  would otherwise be millions of random reads for a busy address.
+- **Sequential `tx` primary key `(block_number, tx_index)`.** A hash PK scatters
+  inserts randomly across a clustered index that quickly outgrows the buffer
+  pool, so every insert becomes a random read+write and the disk's IOPS caps
+  throughput. Keying by `(block_number, tx_index)` makes inserts near-sequential
+  — each chunk touches a narrow, hot window of the index — which is what keeps a
+  multi-billion-row load off the random-IO wall. It also serves per-block lookups
+  and `COUNT(DISTINCT block_number)` from the PK / secondary-index leaf.
+- **Covering analysis indexes (built post-import).** `(addr, block_time,
+  gas_used)` carries everything the aggregate needs (`SUM(gas_used)`, plus
+  `block_number` implicitly via InnoDB's PK suffix for `COUNT(DISTINCT
+  block_number)`) in the index leaf, avoiding per-row PK lookups that would be
+  millions of random reads for a busy address.
 - **`BINARY(20)` addresses / `BINARY(32)` hashes.** Raw bytes are ~2× smaller
-  than hex strings, so the hot `tx` indexes keep more in the buffer pool. Query
+  than hex strings, so the analysis indexes keep more in the buffer pool. Query
   with `UNHEX(...)` on input and `HEX(...)` on output.
-- **`tx.block_number` indexed** (`idx_block_number`) so tx↔block reverse lookups
-  (all txs of a block, or a tx's block via `block.number` PK) stay index-driven.
-- Only the two single-address indexes are created. A combined
+- Only the two single-address indexes are built. A combined
   `(from_addr, to_addr, ...)` index is intentionally omitted; add it only if
   filtering by both together becomes a hot path.
 
@@ -138,13 +172,13 @@ FROM tx WHERE from_addr = UNHEX(?) AND block_time BETWEEN ? AND ?;
   (each block fetch issues its two RPC calls sequentially, so in-flight requests
   ≈ `-concurrency`). Default 100 — raise it only within your provider's
   connection/rate ceiling. MySQL writes are throttled separately by `-db_conns`
-  (kept low — hundreds of concurrent random-PK inserts would cause deadlock
-  storms). Each block (its row + all its tx rows) is written in one transaction.
+  (kept well below `-concurrency`). Each block (its row + all its tx rows) is
+  written in one transaction.
 - **Resumable.** Work is split into fixed-size chunks. A chunk is recorded
   `done` in `import_progress` only after every block in it is durably committed;
   on restart, done chunks are skipped. An interrupted chunk is fully redone —
-  and re-import is idempotent (`INSERT … ON DUPLICATE KEY UPDATE` on the natural
-  PKs `block.number` / `tx.hash`), so nothing is double-counted.
+  and re-import is idempotent (`INSERT … ON DUPLICATE KEY UPDATE` on the PKs
+  `block.number` / `tx.(block_number, tx_index)`), so nothing is double-counted.
 - **Fault tolerance.** Every RPC and MySQL call retries with exponential backoff
   + jitter (transient DB errors — deadlock, lock-wait, bad-conn — only; a
   constraint/data error fails fast). A block that exhausts retries is recorded
@@ -209,17 +243,29 @@ by `to_addr` (contracts) or `from_addr` (sender EOAs); addresses are `BINARY(20)
 so match with `UNHEX('<40-hex>')` (lowercase, no `0x`, never `LOWER()`). Bounds
 `:t0`/`:t1` are unix seconds. Contract-creation txs have `to_addr IS NULL`.
 
-**(a) Average matching txs per block** for an address set (dedup by `hash` so a
-tx matching both sides isn't counted twice; drop the `UNION` if the set is
-purely one side):
+**(a) Average matching txs per block** for a single-side address set. A tx
+appears once per side, so no dedup is needed here — this stays index-only on
+`idx_to_time` (never select `hash`: it isn't in the index leaf and would force a
+per-row clustered-index lookup):
 
 ```sql
 SELECT COUNT(*) AS matching_txs,
        COUNT(DISTINCT block_number) AS matched_blocks,
        COUNT(*) / COUNT(DISTINCT block_number) AS avg_tx_per_block
+FROM tx
+WHERE to_addr IN (UNHEX('55d3…'), UNHEX('8ac7…')) AND block_time BETWEEN :t0 AND :t1;
+```
+
+If you instead need both sides at once (a tx that is both a matching `from` and
+a matching `to` would be counted twice by a `UNION ALL`), dedup on the primary
+key `(block_number, tx_index)` — never `hash`, which is uncovered:
+
+```sql
+SELECT COUNT(*) AS matching_txs, COUNT(DISTINCT block_number) AS matched_blocks
 FROM (
-  SELECT hash, block_number FROM tx
-    WHERE to_addr IN (UNHEX('55d3…'), UNHEX('8ac7…')) AND block_time BETWEEN :t0 AND :t1
+  SELECT block_number, tx_index FROM tx WHERE from_addr IN (UNHEX('…')) AND block_time BETWEEN :t0 AND :t1
+  UNION
+  SELECT block_number, tx_index FROM tx WHERE to_addr   IN (UNHEX('…')) AND block_time BETWEEN :t0 AND :t1
 ) m;
 ```
 
@@ -277,8 +323,9 @@ isn't counted in two eras).
 Notes:
 - **`both`-side sets** (a wallet matched as either sender or receiver): match with
   `WHERE from_addr IN (…) OR to_addr IN (…)` and aggregate once (one row per tx →
-  no double count). If you instead `UNION` two per-side queries, dedup on
-  `tx.hash` only.
+  no double count). If you instead `UNION` two per-side queries, dedup on the PK
+  `(block_number, tx_index)` — not `tx.hash`, which is not in the analysis indexes
+  and would break index-only execution.
 - **Complements / totals**: `to_addr NOT IN (…)` silently drops contract-creation
   txs (`to_addr IS NULL`); add `OR to_addr IS NULL` if they should be included, or
   take the total from the `block` table.

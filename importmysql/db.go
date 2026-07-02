@@ -18,15 +18,23 @@ import (
 // schema is created on startup with IF NOT EXISTS, so a fresh DB is usable
 // without a separate migration step.
 //
+// The tables are created WITHOUT the analysis (secondary) indexes on purpose:
+// maintaining them during a multi-billion-row bulk load turns every insert into
+// several random reads+writes and saturates the disk's IOPS long before the CPU
+// or network. Load first, then build the analysis indexes once (see README
+// "post-import indexes"), which is a single sort-build instead of per-row random
+// IO. Only the primary keys exist during import.
+//
 // Design notes (see also README):
-//   - addresses BINARY(20), hashes BINARY(32): ~2x smaller than hex strings, so
-//     the hot tx indexes fit more of the buffer pool.
+//   - addresses BINARY(20), hashes BINARY(32): ~2x smaller than hex strings.
 //   - block_time is unix seconds (BIGINT), denormalized onto tx so the
-//     from/to + time-range query is a single covering index range scan, no join.
-//   - tx covering indexes (addr, block_time, block_number, gas_used) answer
-//     COUNT(DISTINCT block_number) and SUM(gas_used) index-only; the block index
-//     (block_time, gas_used, gas_limit) answers the range denominators.
-//   - idx_block_number on tx keeps tx<->block reverse lookups index-driven.
+//     from/to + time-range analysis query needs no join.
+//   - tx PRIMARY KEY (block_number, tx_index): tx_index is the on-chain position
+//     in the block, so inserts are near-sequential in clustered-index order (a
+//     moving per-chunk window that stays hot in the buffer pool) rather than the
+//     random scatter a hash PK causes. block_number leading also makes tx<->block
+//     lookups and per-block aggregation (WHERE block_number = ?) use the PK
+//     directly, so no separate idx_block_number is needed.
 var schema = []string{
 	`CREATE TABLE IF NOT EXISTS block (
 		number      BIGINT UNSIGNED NOT NULL,
@@ -35,26 +43,19 @@ var schema = []string{
 		gas_used    BIGINT UNSIGNED NOT NULL,
 		gas_limit   BIGINT UNSIGNED NOT NULL,
 		tx_count    INT    UNSIGNED NOT NULL,
-		PRIMARY KEY (number),
-		KEY idx_block_time_gas (block_time, gas_used, gas_limit),
-		-- gas_limit leading, so "which gas-limit eras exist and their time spans"
-		-- (GROUP BY gas_limit, MIN/MAX(block_time)) is a loose index scan over the
-		-- handful of distinct values, not a full-year table scan.
-		KEY idx_gas_limit (gas_limit, block_time)
+		PRIMARY KEY (number)
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 
 	`CREATE TABLE IF NOT EXISTS tx (
-		hash          BINARY(32)      NOT NULL,
 		block_number  BIGINT UNSIGNED NOT NULL,
+		tx_index      INT    UNSIGNED NOT NULL,
+		hash          BINARY(32)      NOT NULL,
 		block_hash    BINARY(32)      NOT NULL,
 		block_time    BIGINT UNSIGNED NOT NULL,
 		gas_used      BIGINT UNSIGNED NOT NULL,
 		from_addr     BINARY(20)      NOT NULL,
 		to_addr       BINARY(20)      NULL,
-		PRIMARY KEY (hash),
-		KEY idx_from_time (from_addr, block_time, block_number, gas_used),
-		KEY idx_to_time   (to_addr,   block_time, block_number, gas_used),
-		KEY idx_block_number (block_number)
+		PRIMARY KEY (block_number, tx_index)
 	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
 
 	`CREATE TABLE IF NOT EXISTS import_progress (
@@ -153,18 +154,18 @@ func upsertTxs(ctx context.Context, tx *sql.Tx, txs []TxData) error {
 		batch := txs[start:end]
 
 		var b strings.Builder
-		b.WriteString(`INSERT INTO tx (hash, block_number, block_hash, block_time, gas_used, from_addr, to_addr) VALUES `)
-		args := make([]interface{}, 0, len(batch)*7)
+		b.WriteString(`INSERT INTO tx (block_number, tx_index, hash, block_hash, block_time, gas_used, from_addr, to_addr) VALUES `)
+		args := make([]interface{}, 0, len(batch)*8)
 		for i, t := range batch {
 			if i > 0 {
 				b.WriteByte(',')
 			}
-			b.WriteString("(?, ?, ?, ?, ?, ?, ?)")
+			b.WriteString("(?, ?, ?, ?, ?, ?, ?, ?)")
 			var to interface{}
 			if t.To != nil {
 				to = t.To
 			}
-			args = append(args, t.Hash, t.BlockNumber, t.BlockHash, t.BlockTime, t.GasUsed, t.From, to)
+			args = append(args, t.BlockNumber, t.TxIndex, t.Hash, t.BlockHash, t.BlockTime, t.GasUsed, t.From, to)
 		}
 		b.WriteString(` ON DUPLICATE KEY UPDATE block_number=block_number`)
 		if _, err := tx.ExecContext(ctx, b.String(), args...); err != nil {

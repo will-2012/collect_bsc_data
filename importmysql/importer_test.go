@@ -19,7 +19,7 @@ func oneBlockRPC(t *testing.T) *common.Client {
 		"gasUsed": "0x1", "gasLimit": "0x2", "transactions": []string{tHash},
 	}
 	m.receipts = []map[string]interface{}{
-		{"transactionHash": tHash, "from": from1, "to": to1, "gasUsed": "0x1", "blockHash": bHash, "blockNumber": "0x5"},
+		{"transactionHash": tHash, "transactionIndex": "0x0", "from": from1, "to": to1, "gasUsed": "0x1", "blockHash": bHash, "blockNumber": "0x5"},
 	}
 	return m.client()
 }

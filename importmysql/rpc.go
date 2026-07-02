@@ -24,9 +24,15 @@ type BlockData struct {
 // TxData is one transaction row. BlockHash/BlockTime are denormalized from the
 // block so the time-range + address query needs no join, and tx->block lookups
 // have the block key in hand.
+//
+// The primary key is (BlockNumber, TxIndex): TxIndex is the transaction's
+// on-chain position in its block, so inserts land in near-sequential clustered-
+// index order (a moving window per chunk) instead of the random scatter a hash
+// PK produces — this is what keeps the bulk import off the disk's random-IO wall.
 type TxData struct {
-	Hash        []byte // 32
 	BlockNumber int64
+	TxIndex     int64  // on-chain transactionIndex within the block
+	Hash        []byte // 32
 	BlockHash   []byte // 32
 	BlockTime   int64
 	GasUsed     int64
@@ -48,12 +54,13 @@ type rpcHeader struct {
 // rpcReceipt is the subset of a transaction receipt we need. gasUsed here is the
 // real gas consumed (not the tx gas limit), which is what the share metric needs.
 type rpcReceipt struct {
-	TransactionHash string  `json:"transactionHash"`
-	From            string  `json:"from"`
-	To              *string `json:"to"`
-	GasUsed         string  `json:"gasUsed"`
-	BlockHash       string  `json:"blockHash"`
-	BlockNumber     string  `json:"blockNumber"`
+	TransactionHash  string  `json:"transactionHash"`
+	TransactionIndex string  `json:"transactionIndex"`
+	From             string  `json:"from"`
+	To               *string `json:"to"`
+	GasUsed          string  `json:"gasUsed"`
+	BlockHash        string  `json:"blockHash"`
+	BlockNumber      string  `json:"blockNumber"`
 }
 
 // FetchBlock retrieves a block header and its receipts and assembles a BlockData.
@@ -111,6 +118,11 @@ func FetchBlock(ctx context.Context, c *common.Client, n int64) (*BlockData, err
 		headerTxs[strings.ToLower(th)] = true
 	}
 
+	// tx_index is part of the tx primary key, so the receipts' transactionIndex
+	// values must be the distinct set 0..n-1. A non-spec node repeating an index
+	// would otherwise collide on the PK and be silently absorbed by the upsert's
+	// no-op ON DUPLICATE KEY UPDATE, dropping a tx undetected. Reject it here.
+	seenIdx := make([]bool, len(receipts))
 	bd.Txs = make([]TxData, 0, len(receipts))
 	for i := range receipts {
 		r := &receipts[i]
@@ -124,6 +136,16 @@ func FetchBlock(ctx context.Context, c *common.Client, n int64) (*BlockData, err
 			return nil, fmt.Errorf("block %d: receipt tx %s not in header tx set", n, r.TransactionHash)
 		}
 		tx := TxData{BlockNumber: n, BlockHash: bd.Hash, BlockTime: bd.Time}
+		if tx.TxIndex, err = common.ParseHexInt(r.TransactionIndex); err != nil {
+			return nil, fmt.Errorf("tx index: %w", err)
+		}
+		if tx.TxIndex < 0 || tx.TxIndex >= int64(len(receipts)) {
+			return nil, fmt.Errorf("block %d: transactionIndex %d out of range [0,%d)", n, tx.TxIndex, len(receipts))
+		}
+		if seenIdx[tx.TxIndex] {
+			return nil, fmt.Errorf("block %d: duplicate transactionIndex %d", n, tx.TxIndex)
+		}
+		seenIdx[tx.TxIndex] = true
 		if tx.Hash, err = decodeHex(r.TransactionHash, 32); err != nil {
 			return nil, fmt.Errorf("tx hash: %w", err)
 		}
